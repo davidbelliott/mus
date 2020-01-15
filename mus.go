@@ -37,6 +37,7 @@ type Track struct {
 
 type Settings struct {
     autoplay bool
+    quit bool
 }
 
 func (a Album) get_name() string {
@@ -145,7 +146,14 @@ func load_playables(root string) map[string]Playable {
     return playables
 }
 
-func notify(p Playable, i int) {
+func notify(s string) {
+    cmd := exec.Command(notify_cmd, s)
+    err := cmd.Start()
+    if err != nil {
+        panic(err)
+    }
+}
+func notify_track(p Playable, i int) {
     fnames := p.get_filenames()
     var notify_str string
     if len(fnames) > 1 {
@@ -153,14 +161,10 @@ func notify(p Playable, i int) {
     } else {
         notify_str = fmt.Sprintf("%s", p.get_name())
     }
-    cmd := exec.Command(notify_cmd, notify_str)
-    err := cmd.Start()
-    if err != nil {
-        panic(err)
-    }
+    notify(notify_str)
 }
 
-func process_input(input string, cur_proc *os.Process, queue *list.List, settings *Settings) {
+func process_input(input string, cur_proc *os.Process, queue *list.List, settings *Settings, playables *map[string]Playable) {
     input_tokens := strings.Split(input, " ")
     if len(input_tokens) == 1 && input_tokens[0] == "n" {
         if (cur_proc != nil) {
@@ -168,10 +172,35 @@ func process_input(input string, cur_proc *os.Process, queue *list.List, setting
         }
     } else if len(input_tokens) == 1 && input_tokens[0] == "a" {
         settings.autoplay = !settings.autoplay
+    } else if len(input_tokens) == 1 && input_tokens[0] == "q" {
+        settings.quit = true
+        if (cur_proc != nil) {
+            cur_proc.Kill()
+        }
     } else if len(input_tokens) == 2 && input_tokens[0] == "p" {
-        fmt.Println("pushing")
-        queue.PushBack(input_tokens[1])
+        _, ok := (*playables)[input_tokens[1]]
+        if ok {
+            queue.PushBack(input_tokens[1])
+        } else {
+            notify("Track or album doesn't exist")
+        }
     }
+}
+
+func handle_input(input string, ok bool, cur_proc *os.Process, queue *list.List, settings *Settings, playables *map[string]Playable) {
+    if ok {
+        process_input(input, cur_proc, queue, settings, playables)
+        print_prompt()
+    } else {
+        settings.quit = true
+        if (cur_proc != nil) {
+            cur_proc.Kill()
+        }
+    }
+}
+
+func print_prompt() {
+    //fmt.Print("> ")
 }
 
 func main() {
@@ -184,7 +213,6 @@ func main() {
     playables := load_playables(root)
 
     if len(playables) == 0 {
-        fmt.Println("No music files in library")
         return
     }
 
@@ -204,33 +232,39 @@ func main() {
     var cur_proc *os.Process
 
     queue := list.New()
-    settings := Settings{autoplay: true}
+    settings := Settings{autoplay: true, quit: false}
 
-    for {
+    print_prompt()
+    for !settings.quit {
         if queue.Back() == nil {
             if settings.autoplay {
                 queue.PushBack(playable_names[rand.Intn(len(playables))])
             } else {
-                input := <-input_ch
-                process_input(input, cur_proc, queue, &settings)
+                notify("No more tracks in queue")
+                print_prompt()
+                input, ok := <-input_ch
+                handle_input(input, ok, cur_proc, queue, &settings, &playables)
             }
         } else {
             p_name := queue.Front()
             queue.Remove(p_name)
-            p := playables[p_name.Value.(string)]
+            p, ok := playables[p_name.Value.(string)]
+            if !ok {
+                continue
+            }
             fpaths := p.get_filepaths(root)
 
             for i := 0; i < len(fpaths); i++ {
                 track_ch <- fpaths[i]
                 cur_proc = <-proc_ch
-                notify(p, i)
+                notify_track(p, i)
                 proceed := false
                 for !proceed {
                     select {
                         case <-done_ch:
                             proceed = true
-                        case input := <-input_ch:
-                            process_input(input, cur_proc, queue, &settings)
+                        case input, ok := <-input_ch:
+                            handle_input(input, ok, cur_proc, queue, &settings, &playables)
                     }
                 }
             }
