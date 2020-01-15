@@ -3,7 +3,7 @@ package main
 import (
     "fmt"
     "os"
-    "os/exec"
+    //"os/exec"
     "os/user"
     "path/filepath"
     "bufio"
@@ -11,6 +11,10 @@ import (
     "math/rand"
     "container/list"
 )
+
+// #include "fs.h"
+// #cgo LDFLAGS: -lfluidsynth
+import "C"
 
 const order_fname = "order"
 const music_cmd = "fluidsynth"
@@ -38,6 +42,7 @@ type Track struct {
 type Settings struct {
     autoplay bool
     quit bool
+    paused bool
 }
 
 func (a Album) get_name() string {
@@ -80,20 +85,11 @@ func read_input(ch chan string) {
     }
 }
 
-func play_track(track_ch chan string, proc_ch chan *os.Process, done_ch chan bool) {
-    var path string
-    for {
-        path = <-track_ch
-        args := append(strings.Split(music_args, " "), path)
-        cmd := exec.Command(music_cmd, args...)
-        err := cmd.Start()
-        if err != nil {
-            panic(err)
-        }
-        proc_ch <- cmd.Process
-        err = cmd.Wait()
-        done_ch <- true
-    }
+func wait_play_done(done_ch chan bool) {
+    // Get the track to play
+    C.wait()
+    done_ch <- true
+    return
 }
 
 func load_playables(root string) map[string]Playable {
@@ -147,12 +143,14 @@ func load_playables(root string) map[string]Playable {
 }
 
 func notify(s string) {
-    cmd := exec.Command(notify_cmd, s)
+    /*cmd := exec.Command(notify_cmd, s)
     err := cmd.Start()
     if err != nil {
         panic(err)
-    }
+    }*/
+    fmt.Println(s)
 }
+
 func notify_track(p Playable, i int) {
     fnames := p.get_filenames()
     var notify_str string
@@ -164,19 +162,14 @@ func notify_track(p Playable, i int) {
     notify(notify_str)
 }
 
-func process_input(input string, cur_proc *os.Process, queue *list.List, settings *Settings, playables *map[string]Playable) {
+func process_input(input string, queue *list.List, settings *Settings, playables *map[string]Playable) {
     input_tokens := strings.Split(input, " ")
     if len(input_tokens) == 1 && input_tokens[0] == "n" {
-        if (cur_proc != nil) {
-            cur_proc.Kill()
-        }
+        C.stop()
     } else if len(input_tokens) == 1 && input_tokens[0] == "a" {
         settings.autoplay = !settings.autoplay
     } else if len(input_tokens) == 1 && input_tokens[0] == "q" {
         settings.quit = true
-        if (cur_proc != nil) {
-            cur_proc.Kill()
-        }
     } else if len(input_tokens) == 2 && input_tokens[0] == "p" {
         _, ok := (*playables)[input_tokens[1]]
         if ok {
@@ -184,26 +177,45 @@ func process_input(input string, cur_proc *os.Process, queue *list.List, setting
         } else {
             notify("Track or album doesn't exist")
         }
+    } else if len(input_tokens) == 1 && input_tokens[0] == "p" {
+        if settings.paused {
+            play()
+        } else {
+            pause()
+        }
+        settings.paused = !settings.paused
     }
 }
 
-func handle_input(input string, ok bool, cur_proc *os.Process, queue *list.List, settings *Settings, playables *map[string]Playable) {
+func handle_input(input string, ok bool, queue *list.List, settings *Settings, playables *map[string]Playable) {
     if ok {
-        process_input(input, cur_proc, queue, settings, playables)
+        process_input(input, queue, settings, playables)
         print_prompt()
     } else {
         settings.quit = true
-        if (cur_proc != nil) {
-            cur_proc.Kill()
-        }
     }
+}
+
+func play() {
+    C.play()
+    go wait_play_done(done_ch)
+}
+
+func pause() {
+    C.pause()
+    <-done_ch
 }
 
 func print_prompt() {
     //fmt.Print("> ")
 }
 
+// Channels
+var input_ch = make(chan string)
+var done_ch = make(chan bool)
+
 func main() {
+    C.init()
     user, err := user.Current()
     if err != nil {
         panic(err)
@@ -221,18 +233,10 @@ func main() {
         playable_names = append(playable_names, k)
     }
 
-    input_ch := make(chan string)
     go read_input(input_ch)
 
-    track_ch := make(chan string)
-    proc_ch := make(chan *os.Process)
-    done_ch := make(chan bool)
-    go play_track(track_ch, proc_ch, done_ch)
-
-    var cur_proc *os.Process
-
     queue := list.New()
-    settings := Settings{autoplay: true, quit: false}
+    settings := Settings{autoplay: true, quit: false, paused: false}
 
     print_prompt()
     for !settings.quit {
@@ -243,7 +247,7 @@ func main() {
                 notify("No more tracks in queue")
                 print_prompt()
                 input, ok := <-input_ch
-                handle_input(input, ok, cur_proc, queue, &settings, &playables)
+                handle_input(input, ok, queue, &settings, &playables)
             }
         } else {
             p_name := queue.Front()
@@ -255,19 +259,28 @@ func main() {
             fpaths := p.get_filepaths(root)
 
             for i := 0; i < len(fpaths); i++ {
-                track_ch <- fpaths[i]
-                cur_proc = <-proc_ch
+
+                C.add_midi(C.CString(fpaths[i]))
+                play()
+
                 notify_track(p, i)
                 proceed := false
+
                 for !proceed {
-                    select {
-                        case <-done_ch:
-                            proceed = true
-                        case input, ok := <-input_ch:
-                            handle_input(input, ok, cur_proc, queue, &settings, &playables)
+                    if settings.paused {
+                        input, ok := <-input_ch
+                        handle_input(input, ok, queue, &settings, &playables)
+                    } else {
+                        select {
+                            case <-done_ch:
+                                proceed = true
+                            case input, ok := <-input_ch:
+                                handle_input(input, ok, queue, &settings, &playables)
+                        }
                     }
                 }
             }
         }
     }
+    C.cleanup()
 }
