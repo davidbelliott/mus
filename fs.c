@@ -1,4 +1,6 @@
 #include <fluidsynth.h>
+#include <stdbool.h>
+#include "fs.h"
 
 fluid_settings_t* settings;
 fluid_synth_t* synth;
@@ -7,13 +9,14 @@ fluid_audio_driver_t* adriver;
 
 int load_soundfont(const char *fname);
 
-void init() {
+void init(const char* audio_driver, const char* soundfont) {
     settings = new_fluid_settings();
     synth = new_fluid_synth(settings);
-    fluid_settings_setstr(settings, "audio.driver", "alsa");
+    fluid_settings_setstr(settings, "audio.driver", audio_driver);
     player = new_fluid_player(synth);
+    fluid_player_stop(player);
     adriver = NULL;
-    load_soundfont("/usr/share/soundfonts/default.sf2");
+    load_soundfont(soundfont);
 }
 
 void cleanup() {
@@ -33,17 +36,22 @@ int load_soundfont(const char *fname) {
     return 1;
 }
 
-int add_midi(const char *fname) {
-    if (!fluid_is_midifile(fname)) {
-        return 1;
+// Must only be called when player is stopped and wait() has returned
+bool add_midi(const char *fname) {
+    if (fluid_player_get_status(player) != FLUID_PLAYER_DONE) {
+        return false;
     }
-    int ticks = fluid_player_get_total_ticks(player);
+    if (!fluid_is_midifile(fname)) {
+        return false;
+    }
+    delete_fluid_player(player);
+    player = new_fluid_player(synth);
+    fluid_player_stop(player);
     fluid_player_add(player, fname);
     if (!adriver) {
         adriver = new_fluid_audio_driver(settings, synth);
     }
-    fluid_player_seek(player, ticks);
-    return 0;
+    return true;
 }
 
 void wait() {

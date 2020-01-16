@@ -3,13 +3,14 @@ package main
 import (
     "fmt"
     "os"
-    //"os/exec"
     "os/user"
     "path/filepath"
     "bufio"
     "strings"
     "math/rand"
     "container/list"
+    "errors"
+    "flag"
 )
 
 // #include "fs.h"
@@ -17,8 +18,6 @@ import (
 import "C"
 
 const order_fname = "order"
-const music_cmd = "fluidsynth"
-const music_args = "-a alsa -m alsa_seq -l -i /usr/share/soundfonts/OPL-3_FM_128M.sf2"
 
 const notify_cmd = "notify-send"
 
@@ -39,10 +38,13 @@ type Track struct {
     name string
 }
 
-type Settings struct {
+type State struct {
+    root string
     autoplay bool
-    quit bool
     paused bool
+    queue *list.List
+    cur_playable Playable
+    cur_idx int
 }
 
 func (a Album) get_name() string {
@@ -162,125 +164,153 @@ func notify_track(p Playable, i int) {
     notify(notify_str)
 }
 
-func process_input(input string, queue *list.List, settings *Settings, playables *map[string]Playable) {
+func enqueue_playable(name string, state *State) error {
+    _, ok := playables[name]
+    if !ok {
+        return errors.New("nonexistent album/track")
+    }
+    state.queue.PushBack(name)
+    return nil
+}
+
+func process_input(input string, ok bool, state *State, done_ch chan bool) bool {
+    if !ok {
+        return false
+    }
     input_tokens := strings.Split(input, " ")
     if len(input_tokens) == 1 && input_tokens[0] == "n" {
-        C.stop()
+        p, i := get_next_track(state)
+        play_track(p, i, state, done_ch)
     } else if len(input_tokens) == 1 && input_tokens[0] == "a" {
-        settings.autoplay = !settings.autoplay
+        state.autoplay = !state.autoplay
     } else if len(input_tokens) == 1 && input_tokens[0] == "q" {
-        settings.quit = true
+        return true
     } else if len(input_tokens) == 2 && input_tokens[0] == "p" {
-        _, ok := (*playables)[input_tokens[1]]
-        if ok {
-            queue.PushBack(input_tokens[1])
-        } else {
-            notify("Track or album doesn't exist")
+        err := enqueue_playable(input_tokens[1], state)
+        if err != nil {
+            notify(err.Error())
         }
     } else if len(input_tokens) == 1 && input_tokens[0] == "p" {
-        if settings.paused {
-            play()
+        if state.paused {
+            play(state, done_ch)
         } else {
-            pause()
+            pause(state, done_ch)
         }
-        settings.paused = !settings.paused
+    }
+    return false
+}
+
+func play(state *State, done_ch chan bool) {
+    if (state.paused) {
+        C.play()
+        go wait_play_done(done_ch)
+        state.paused = false
     }
 }
 
-func handle_input(input string, ok bool, queue *list.List, settings *Settings, playables *map[string]Playable) {
-    if ok {
-        process_input(input, queue, settings, playables)
-        print_prompt()
-    } else {
-        settings.quit = true
+func pause(state *State, done_ch chan bool) {
+    if (!state.paused) {
+        C.pause()
+        <-done_ch
+        state.paused = true
     }
 }
 
-func play() {
-    C.play()
-    go wait_play_done(done_ch)
-}
-
-func pause() {
-    C.pause()
-    <-done_ch
+func play_track(p Playable, i int, state *State, done_ch chan bool) {
+    pause(state, done_ch)
+    state.cur_playable = p
+    state.cur_idx = i
+    paths := p.get_filepaths(state.root)
+    notify_track(p, i)
+    if !C.add_midi(C.CString(paths[i])) {
+        notify("couldn't add midi file")
+    }
+    play(state, done_ch)
 }
 
 func print_prompt() {
     //fmt.Print("> ")
 }
 
-// Channels
-var input_ch = make(chan string)
-var done_ch = make(chan bool)
+func get_next_playable(state *State) Playable {
+    if state.queue.Back() != nil {
+        front := state.queue.Front()
+        state.queue.Remove(front)
+        return playables[front.Value.(string)]
+    } else {
+        return playables[playable_names[rand.Intn(len(playables))]]
+    }
+}
 
-func main() {
-    C.init()
+func get_next_track(state *State) (Playable, int) {
+    var (
+        p Playable
+        i int
+    )
+    if state.cur_playable == nil {
+        p = get_next_playable(state)
+        i = 0
+    } else {
+        p = state.cur_playable
+        i = state.cur_idx + 1
+        if i >= len(state.cur_playable.get_filenames()) {
+            p = get_next_playable(state)
+            i = 0
+        }
+    }
+    return p, i
+}
+
+var playables map[string]Playable
+var playable_names []string
+var state State
+
+var sound_driver = flag.String("driver", "pulseaudio", "the FluidSynth sound driver to use")
+var soundfont = flag.String("soundfont", "/usr/share/soundfonts/default.sf2", "the FluidSynth soundfont to use")
+
+func init() {
+    flag.Parse()
+    C.init(C.CString(*sound_driver), C.CString(*soundfont))
     user, err := user.Current()
     if err != nil {
         panic(err)
     }
-    root := user.HomeDir + "/music/midi"
 
-    playables := load_playables(root)
+    state = State{root: user.HomeDir + "/music/midi", autoplay: true, paused: true, queue: list.New(), cur_playable: nil, cur_idx: 0}
 
+    playables = load_playables(state.root)
     if len(playables) == 0 {
         return
     }
 
-    playable_names := make([]string, 0, len(playables))
+    playable_names = make([]string, 0, len(playables))
     for k := range playables {
         playable_names = append(playable_names, k)
     }
+}
 
+func main() {
+    var input_ch = make(chan string)
     go read_input(input_ch)
 
-    queue := list.New()
-    settings := Settings{autoplay: true, quit: false, paused: false}
+    var done_ch = make(chan bool)
 
-    print_prompt()
-    for !settings.quit {
-        if queue.Back() == nil {
-            if settings.autoplay {
-                queue.PushBack(playable_names[rand.Intn(len(playables))])
-            } else {
-                notify("No more tracks in queue")
-                print_prompt()
-                input, ok := <-input_ch
-                handle_input(input, ok, queue, &settings, &playables)
-            }
+    quit := false
+    for !quit {
+        if state.paused {
+            input, ok := <-input_ch
+            quit = process_input(input, ok, &state, done_ch)
         } else {
-            p_name := queue.Front()
-            queue.Remove(p_name)
-            p, ok := playables[p_name.Value.(string)]
-            if !ok {
-                continue
-            }
-            fpaths := p.get_filepaths(root)
-
-            for i := 0; i < len(fpaths); i++ {
-
-                C.add_midi(C.CString(fpaths[i]))
-                play()
-
-                notify_track(p, i)
-                proceed := false
-
-                for !proceed {
-                    if settings.paused {
-                        input, ok := <-input_ch
-                        handle_input(input, ok, queue, &settings, &playables)
-                    } else {
-                        select {
-                            case <-done_ch:
-                                proceed = true
-                            case input, ok := <-input_ch:
-                                handle_input(input, ok, queue, &settings, &playables)
-                        }
-                    }
-                }
+            select {
+            case <-done_ch:
+                state.paused = true
+                p, i := get_next_track(&state)
+                play_track(p, i, &state, done_ch)
+            case input, ok := <-input_ch:
+                quit = process_input(input, ok, &state, done_ch)
             }
         }
     }
+
     C.cleanup()
 }
