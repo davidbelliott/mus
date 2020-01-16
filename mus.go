@@ -11,6 +11,7 @@ import (
     "container/list"
     "errors"
     "flag"
+    "log"
 )
 
 // #include "fs.h"
@@ -54,7 +55,7 @@ func (a Album) get_name() string {
 func (a Album) get_filepaths(root_dir string) []string {
     filenames := make([]string, len(a.track_names))
     for i, fname := range a.track_names {
-        filenames[i] = root_dir + "/" + a.name + "/" + fname
+        filenames[i] = filepath.Join(root_dir, a.name, fname)
     }
     return filenames
 }
@@ -68,7 +69,7 @@ func (t Track) get_name() string {
 }
 
 func (t Track) get_filepaths(root_dir string) []string {
-    return []string{root_dir + "/" + t.name}
+    return []string{filepath.Join(root_dir, t.name)}
 }
 
 func (t Track) get_filenames() []string {
@@ -109,11 +110,10 @@ func load_playables(root string) map[string]Playable {
 
     in_album := map[string]string{}
 
-    n_root_tokens := len(strings.Split(root, "/"))
     for _, file := range files {
-        tokens := strings.Split(file, "/")
-        if len(tokens) >= n_root_tokens + 2 && tokens[len(tokens) - 1] == order_fname {
-            album_name := strings.Join(tokens[n_root_tokens:len(tokens) - 1], "/")
+        path, name := filepath.Split(file)
+        if name == order_fname {
+            album_name, _ := filepath.Rel(root, path)
             f, err := os.Open(file)
             if err != nil {
                 panic(err)
@@ -125,7 +125,7 @@ func load_playables(root string) map[string]Playable {
             for scanner.Scan() {
                 filename := scanner.Text()
                 track_names = append(track_names, filename)
-                in_album[root + "/" + album_name + "/" + filename] = album_name
+                in_album[filepath.Join(root, album_name, filename)] = album_name
             }
 
             playables[album_name] = Album{name: album_name, track_names: track_names}
@@ -135,8 +135,7 @@ func load_playables(root string) map[string]Playable {
     for _, file := range files {
         _, ok := in_album[file]
         if !ok {
-            tokens := strings.Split(file, "/")
-            track_name := strings.Join(tokens[n_root_tokens:], "/")
+            track_name, _ := filepath.Rel(root, file)
             playables[track_name] = Track{name: track_name}
         }
     }
@@ -261,26 +260,30 @@ func get_next_track(state *State) (Playable, int) {
     return p, i
 }
 
+const root_default_rel = "midi"
+
 var playables map[string]Playable
 var playable_names []string
 var state State
 
 var sound_driver = flag.String("driver", "pulseaudio", "the FluidSynth sound driver to use")
 var soundfont = flag.String("soundfont", "/usr/share/soundfonts/default.sf2", "the FluidSynth soundfont to use")
+var root string
 
 func init() {
-    flag.Parse()
-    C.init(C.CString(*sound_driver), C.CString(*soundfont))
     user, err := user.Current()
     if err != nil {
         panic(err)
     }
+    flag.StringVar(&root, "d", filepath.Join(user.HomeDir, root_default_rel), "the directory in which midi files are saved")
 
-    state = State{root: user.HomeDir + "/music/midi", autoplay: true, paused: true, queue: list.New(), cur_playable: nil, cur_idx: 0}
+    flag.Parse()
+    C.init(C.CString(*sound_driver), C.CString(*soundfont))
+    state = State{root: root, autoplay: true, paused: true, queue: list.New(), cur_playable: nil, cur_idx: 0}
 
     playables = load_playables(state.root)
     if len(playables) == 0 {
-        return
+        log.Fatal(fmt.Sprintf("no tracks or albums found in %s", state.root))
     }
 
     playable_names = make([]string, 0, len(playables))
