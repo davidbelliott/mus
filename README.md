@@ -2,7 +2,16 @@
 
 Minimal MIDI player written in Go, using FluidSynth for synthesis.
 
-## Basic usage
+## Prerequisites and Installation
+
+To use `mus`, you must:
+
+1. Install FluidSynth. For instructions on how to install FluidSynth on your system, see [Get FluidSynth](https://github.com/FluidSynth/fluidsynth/wiki/GettingStarted#get-fluidsynth).
+2. Download at least one soundfont for FluidSynth (see [the SoundFont page on FluidSynth's wiki](https://github.com/FluidSynth/fluidsynth/wiki/SoundFont) for information on soundfonts and where to get them).
+    1. If you wish to use a soundfont as the default, place or link it to the default path listed under [Basic usage](#basic-usage).
+3. Build `mus` itself by cloning or downloading this repository, then running `go build` in the root directory of the repo. If you completed step 1 correctly, this should succeed and produce the executable file `mus`.
+
+## <a name="basic-usage"></a>Basic usage
 
 ~~~
 mus [-d dir] [-driver driver_name] [-soundfont soundfont]
@@ -10,13 +19,15 @@ mus [-d dir] [-driver driver_name] [-soundfont soundfont]
 
 `-d dir`: specifies the root directory to play MIDI music from. Default is `$HOME/midi`.
 
-`-driver driver_name`: `driver_name` will be passed to FluidSynth, and can be any driver name supported by FluidSynth. Default is `pulseaudio`.
+`-driver driver_name`: `driver_name` will be passed to FluidSynth, and can be any driver name supported by FluidSynth (run `fluidsynth -a help` to see the options). Default is `pulseaudio`.
 
 `-soundfont soundfont`: `soundfont` is the path to a FluidSynth soundfont file (.sf2) to use. Default is `/usr/share/soundfonts/default.sf2`.
 
-`mus` will start paused with an empty queue. Singles and albums, inferred from the midi directory structure, can be enqueued using the `p trackname` command. Use the `p` command to play and pause, and the `n` command to skip. If `mus` is playing and no tracks are left on the queue, it will randomly select a single or album to play.
+`mus` will start paused with an empty queue. Once `mus` starts, the user can enter interactive commands detailed in the [interactive commands](#interactive-commands) section. For example, singles and albums, inferred from the [MIDI directory structure](#midi-dir), can be enqueued using the `p trackname` command. Use the `p` command to play and pause, and the `n` command to skip. If `mus` is playing and no tracks are left on the queue, it will randomly select a single or album to play.
 
-## MIDI directory structure
+In lieu of issuing interactive commands to manage which tracks and albums are played, one can construct a "playlist" which actually consists of interactive commands which will immediately be run in sequence. For more information on playlists, see the section [playlists](#playlists).
+
+## <a name="midi-dir"></a>MIDI directory structure
 
 The root MIDI directory can contain any number of regular files and nested subdirectories. Upon initialization, files will be processed as follows:
 
@@ -47,7 +58,7 @@ track2.mid
 
 Then, the result will be one album (`album1`) with the order `track3.mid, track2.mid` and two singles: `track1.mid` and `directory/track4.mid`. If `album1` were a subdirectory within `directory`, it would then be named `directory/album1`.
 
-## Interactive commands
+## <a name="interactive-commands"></a>Interactive commands
 
 `p`: play/pause
 
@@ -57,7 +68,7 @@ Then, the result will be one album (`album1`) with the order `track3.mid, track2
 
 `q`: quit
 
-## Playlists
+## <a name="playlists"></a>Playlists
 
 A playlist can be implemented as a file containing commands which is piped into `mus`, which immediately executes the commands in sequence. For instance, consider the file `playlist.txt` with contents:
 
