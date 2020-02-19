@@ -9,14 +9,13 @@ fluid_audio_driver_t* adriver;
 
 int load_soundfont(const char *fname);
 
-void init(const char* audio_driver, const char* soundfont) {
+void init(const char* audio_driver) {
     settings = new_fluid_settings();
     synth = new_fluid_synth(settings);
     fluid_settings_setstr(settings, "audio.driver", audio_driver);
     player = new_fluid_player(synth);
     fluid_player_stop(player);
     adriver = NULL;
-    load_soundfont(soundfont);
 }
 
 void cleanup() {
@@ -63,9 +62,5 @@ void play() {
 }
 
 void pause() {
-    fluid_player_stop(player);
-}
-
-void stop() {
     fluid_player_stop(player);
 }

@@ -98,7 +98,8 @@ func wait_play_done(done_ch chan bool) {
 func load_playables(root string) map[string]Playable {
     playables := map[string]Playable{}
     var files []string
-    err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+    err := filepath.Walk(root, func(path string, info os.FileInfo,
+        err error) error {
         if info != nil && !info.IsDir() {
             files = append(files, path)
         }
@@ -128,7 +129,8 @@ func load_playables(root string) map[string]Playable {
                 in_album[filepath.Join(root, album_name, filename)] = album_name
             }
 
-            playables[album_name] = Album{name: album_name, track_names: track_names}
+            playables[album_name] = Album{name: album_name,
+                track_names: track_names}
         }
     }
 
@@ -156,7 +158,8 @@ func notify_track(p Playable, i int) {
     fnames := p.get_filenames()
     var notify_str string
     if len(fnames) > 1 {
-        notify_str = fmt.Sprintf("%s > %s (%d/%d)", p.get_name(), fnames[i], i + 1, len(fnames))
+        notify_str = fmt.Sprintf("%s > %s (%d/%d)", p.get_name(), fnames[i],
+            i + 1, len(fnames))
     } else {
         notify_str = fmt.Sprintf("%s", p.get_name())
     }
@@ -172,7 +175,8 @@ func enqueue_playable(name string, state *State) error {
     return nil
 }
 
-func process_input(input string, ok bool, state *State, done_ch chan bool) bool {
+func process_input(input string, ok bool, state *State,
+    done_ch chan bool) bool {
     if !ok {
         return false
     }
@@ -227,10 +231,6 @@ func play_track(p Playable, i int, state *State, done_ch chan bool) {
     play(state, done_ch)
 }
 
-func print_prompt() {
-    //fmt.Print("> ")
-}
-
 func get_next_playable(state *State) Playable {
     if state.queue.Back() != nil {
         front := state.queue.Front()
@@ -266,8 +266,10 @@ var playables map[string]Playable
 var playable_names []string
 var state State
 
-var sound_driver = flag.String("driver", "pulseaudio", "the FluidSynth sound driver to use")
-var soundfont = flag.String("soundfont", "/usr/share/soundfonts/default.sf2", "the FluidSynth soundfont to use")
+var sound_driver = flag.String("driver", "pulseaudio",
+    "the FluidSynth sound driver to use")
+var soundfont = flag.String("soundfont", "/usr/share/soundfonts/default.sf2",
+    "the FluidSynth soundfont to use")
 var root string
 
 func init() {
@@ -275,11 +277,19 @@ func init() {
     if err != nil {
         panic(err)
     }
-    flag.StringVar(&root, "d", filepath.Join(user.HomeDir, root_default_rel), "the directory in which midi files are saved")
+    flag.StringVar(&root, "d", filepath.Join(user.HomeDir, root_default_rel),
+        "the directory in which midi files are saved")
 
     flag.Parse()
-    C.init(C.CString(*sound_driver), C.CString(*soundfont))
-    state = State{root: root, autoplay: true, paused: true, queue: list.New(), cur_playable: nil, cur_idx: 0}
+    root, err = filepath.EvalSymlinks(root)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    C.init(C.CString(*sound_driver))
+    C.load_soundfont(C.CString(*soundfont))
+    state = State{root: root, autoplay: true, paused: true, queue: list.New(),
+        cur_playable: nil, cur_idx: 0}
 
     playables = load_playables(state.root)
     if len(playables) == 0 {
